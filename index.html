@@ -76,7 +76,7 @@
 <body>
 <div id="root"></div>
 
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-source" data-presets="react">
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 // ============================================================
@@ -672,5 +672,29 @@ function App(){
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 </script>
+
+<div id="error-overlay" style="display:none; position:fixed; inset:0; background:#1a0000; color:#ff8080; font-family:monospace; font-size:13px; padding:20px; z-index:99999; overflow:auto; white-space:pre-wrap;"></div>
+<script>
+function showError(title, err) {
+  var box = document.getElementById('error-overlay');
+  box.style.display = 'block';
+  var msg = (err && err.stack) ? err.stack : (err && err.message) ? err.message : String(err);
+  box.textContent = '=== ' + title + ' ===\n\n' + msg;
+}
+window.addEventListener('error', function(e) {
+  showError('ERRO DE EXECUCAO', e.error || e.message);
+});
+window.addEventListener('unhandledrejection', function(e) {
+  showError('PROMISE REJEITADA', e.reason);
+});
+try {
+  var src = document.getElementById('app-source').textContent;
+  var output = Babel.transform(src, { presets: ['react'] }).code;
+  (0, eval)(output);
+} catch (err) {
+  showError('ERRO DE COMPILACAO (BABEL)', err);
+}
+</script>
+
 </body>
 </html>

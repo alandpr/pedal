@@ -1,11 +1,676 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Teste</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Pedal — Registro de Pedaladas</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script src="https://cdn.tailwindcss.com"></script>
+
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+  :root{
+    --asphalt: #14161a;
+    --asphalt-2: #1d2025;
+    --card: #22262c;
+    --line: #2e333a;
+    --orange: #ff5a1f;
+    --orange-dim: #7a3318;
+    --yellow: #ffd23f;
+    --text: #eef0f2;
+    --text-dim: #9aa1ab;
+    --green: #35d07f;
+  }
+  html,body{ background:var(--asphalt); color:var(--text); font-family:'Inter',sans-serif; overscroll-behavior:none; }
+  .font-display{ font-family:'Space Grotesk',sans-serif; }
+  .font-mono{ font-family:'JetBrains Mono',monospace; }
+
+  /* dashed road-marking divider */
+  .road-divider{
+    height:3px;
+    background-image: repeating-linear-gradient(90deg, var(--yellow) 0 14px, transparent 14px 26px);
+    opacity:0.85;
+    border-radius:2px;
+  }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:16px; }
+  .stat-num{ font-family:'JetBrains Mono',monospace; font-weight:700; letter-spacing:-0.02em; }
+  #map, #detailMap{ background:#0d0f12; }
+  .leaflet-container{ background:#0d0f12 !important; }
+  .btn-primary{
+    background: var(--orange);
+    color:#1a0d05;
+    font-weight:700;
+  }
+  .btn-primary:active{ transform: scale(0.97); }
+  .btn-ghost{
+    background: transparent;
+    border:1px solid var(--line);
+    color: var(--text);
+  }
+  .pulse-dot{
+    width:10px;height:10px;border-radius:9999px;background:var(--green);
+    box-shadow:0 0 0 0 rgba(53,208,127,0.6);
+    animation:pulse 1.6s infinite;
+  }
+  @keyframes pulse{
+    0%{ box-shadow:0 0 0 0 rgba(53,208,127,0.55);}
+    70%{ box-shadow:0 0 0 10px rgba(53,208,127,0);}
+    100%{ box-shadow:0 0 0 0 rgba(53,208,127,0);}
+  }
+  ::-webkit-scrollbar{ display:none; }
+</style>
 </head>
-<body style="background:#0b0b0d; color:#fff; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; font-family:sans-serif;">
-  <h1>olá</h1>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+// ============================================================
+// FIREBASE CONFIG — cole aqui as credenciais do seu projeto
+// (Firebase Console > Configurações do projeto > Seus apps > SDK)
+// Ative: Authentication > Sign-in method > Anonymous
+// Ative: Firestore Database > Criar banco de dados (modo produção)
+// ============================================================
+const firebaseConfig = {
+  apiKey: "AIzaSyAMKL8bz2L4Fle0S5FlhEPhzDqJWYFytXI",
+  authDomain: "pedal-acf12.firebaseapp.com",
+  projectId: "pedal-acf12",
+  storageBucket: "pedal-acf12.firebasestorage.app",
+  messagingSenderId: "1087430789872",
+  appId: "1:1087430789872:web:3f029bbea5643099861035"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+// ============================================================
+// UTILITÁRIOS DE GEOMETRIA / FÍSICA DO PERCURSO
+// ============================================================
+function haversine(lat1, lon1, lat2, lon2){
+  const R = 6371000;
+  const toRad = d => d * Math.PI/180;
+  const dLat = toRad(lat2-lat1);
+  const dLon = toRad(lon2-lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function fmtTime(sec){
+  sec = Math.floor(sec);
+  const h = Math.floor(sec/3600);
+  const m = Math.floor((sec%3600)/60);
+  const s = sec%60;
+  return h>0
+    ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+    : `${m}:${String(s).padStart(2,'0')}`;
+}
+
+function fmtDate(ts){
+  const d = new Date(ts);
+  return d.toLocaleDateString('pt-BR', { day:'2-digit', month:'short', year:'numeric' }) + ' · ' +
+         d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' });
+}
+
+// Detecta o trecho mais "pesado" (maior ganho de elevação sustentado) de um percurso
+function findToughestClimb(points){
+  if (!points || points.length < 5) return null;
+  let segments = [];
+  let current = null;
+  for (let i=1; i<points.length; i++){
+    const dDist = points[i].cumDist - points[i-1].cumDist;
+    const dAlt = (points[i].alt ?? points[i-1].alt) - points[i-1].alt;
+    if (dDist <= 0) continue;
+    const grade = dAlt/dDist;
+    if (grade > 0.012){ // subida > 1.2%
+      if (!current) current = { startIdx: i-1, elevGain: 0, dist: 0 };
+      current.elevGain += Math.max(dAlt, 0);
+      current.dist += dDist;
+      current.endIdx = i;
+    } else {
+      if (current && current.dist > 80 && current.elevGain > 3) segments.push(current);
+      current = null;
+    }
+  }
+  if (current && current.dist > 80 && current.elevGain > 3) segments.push(current);
+  if (segments.length === 0) return null;
+  segments.sort((a,b) => b.elevGain - a.elevGain);
+  const best = segments[0];
+  const durSec = (points[best.endIdx].t - points[best.startIdx].t)/1000;
+  return {
+    ...best,
+    avgGrade: (best.elevGain/best.dist)*100,
+    avgSpeedKmh: durSec > 0 ? (best.dist/durSec)*3.6 : 0,
+    durSec
+  };
+}
+
+// Índice de esforço simples pra comparar pedaladas entre si
+function effortScore(ride){
+  return (ride.distance/1000) + (ride.elevGain||0) * 0.06;
+}
+
+// ============================================================
+// TELA: GRAVAÇÃO AO VIVO
+// ============================================================
+function RecordScreen({ onFinish, onCancel }){
+  const [status, setStatus] = useState('ready'); // ready | recording | paused
+  const [elapsed, setElapsed] = useState(0);
+  const [movingTime, setMovingTime] = useState(0);
+  const [distance, setDistance] = useState(0);
+  const [curSpeed, setCurSpeed] = useState(0);
+  const [maxSpeed, setMaxSpeed] = useState(0);
+  const [elevGain, setElevGain] = useState(0);
+  const [maxAlt, setMaxAlt] = useState(null);
+  const [gpsOk, setGpsOk] = useState(false);
+  const [error, setError] = useState(null);
+
+  const pointsRef = useRef([]);
+  const watchIdRef = useRef(null);
+  const lastPointRef = useRef(null);
+  const startWallRef = useRef(null);
+  const tickRef = useRef(null);
+  const mapRef = useRef(null);
+  const leafletMapRef = useRef(null);
+  const polylineRef = useRef(null);
+  const markerRef = useRef(null);
+
+  useEffect(() => {
+    leafletMapRef.current = L.map(mapRef.current, { zoomControl:false, attributionControl:false });
+    leafletMapRef.current.setView([-21.7889, -46.5619], 15); // Poços de Caldas default
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(leafletMapRef.current);
+    polylineRef.current = L.polyline([], { color:'#ff5a1f', weight:5, opacity:0.95 }).addTo(leafletMapRef.current);
+    markerRef.current = L.circleMarker([-21.7889,-46.5619], { radius:7, color:'#35d07f', fillColor:'#35d07f', fillOpacity:1 }).addTo(leafletMapRef.current);
+    return () => { leafletMapRef.current && leafletMapRef.current.remove(); };
+  }, []);
+
+  useEffect(() => {
+    return () => { if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current); if (tickRef.current) clearInterval(tickRef.current); };
+  }, []);
+
+  const handlePosition = useCallback((pos) => {
+    setGpsOk(true);
+    const { latitude, longitude, altitude, accuracy, speed } = pos.coords;
+    const t = pos.timestamp;
+    if (accuracy && accuracy > 30) return; // ignora leitura muito ruim
+
+    if (leafletMapRef.current){
+      leafletMapRef.current.setView([latitude, longitude], leafletMapRef.current.getZoom() < 14 ? 16 : leafletMapRef.current.getZoom());
+      markerRef.current.setLatLng([latitude, longitude]);
+    }
+
+    const last = lastPointRef.current;
+    let cumDist = pointsRef.current.length ? pointsRef.current[pointsRef.current.length-1].cumDist : 0;
+    let alt = (typeof altitude === 'number') ? altitude : (last ? last.alt : null);
+
+    if (!last){
+      lastPointRef.current = { lat: latitude, lng: longitude, alt, t, cumDist: 0 };
+      pointsRef.current.push({ lat: latitude, lng: longitude, alt, t, cumDist: 0 });
+      polylineRef.current.addLatLng([latitude, longitude]);
+      return;
+    }
+
+    const dDist = haversine(last.lat, last.lng, latitude, longitude);
+    const dt = (t - last.t)/1000;
+    if (dt <= 0) return;
+    const instSpeed = (typeof speed === 'number' && speed >= 0) ? speed : (dDist/dt);
+    const isMoving = instSpeed > 0.6; // ~2.2 km/h threshold
+
+    if (isMoving && dDist < 60){ // ignora saltos absurdos de GPS
+      cumDist += dDist;
+      setDistance(cumDist);
+      setMovingTime(m => m + dt);
+      const kmh = instSpeed*3.6;
+      setCurSpeed(kmh);
+      setMaxSpeed(m => Math.max(m, kmh));
+      polylineRef.current.addLatLng([latitude, longitude]);
+
+      if (alt !== null && last.alt !== null){
+        const dAlt = alt - last.alt;
+        if (dAlt > 0.5) setElevGain(g => g + dAlt);
+        setMaxAlt(m => (m === null ? alt : Math.max(m, alt)));
+      }
+      pointsRef.current.push({ lat: latitude, lng: longitude, alt, t, cumDist });
+      lastPointRef.current = { lat: latitude, lng: longitude, alt, t, cumDist };
+    } else {
+      setCurSpeed(0);
+      lastPointRef.current = { ...last, t }; // atualiza tempo de referência sem mover
+    }
+  }, []);
+
+  const start = () => {
+    setError(null);
+    if (!navigator.geolocation){ setError('Este navegador não suporta GPS.'); return; }
+    watchIdRef.current = navigator.geolocation.watchPosition(handlePosition, (err) => {
+      setError('Sinal de GPS fraco ou permissão negada. Verifique a localização do celular.');
+    }, { enableHighAccuracy:true, maximumAge:0, timeout:8000 });
+    startWallRef.current = Date.now();
+    tickRef.current = setInterval(() => setElapsed(e => e+1), 1000);
+    setStatus('recording');
+  };
+
+  const pause = () => {
+    if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current);
+    if (tickRef.current) clearInterval(tickRef.current);
+    setStatus('paused');
+  };
+
+  const resume = () => {
+    watchIdRef.current = navigator.geolocation.watchPosition(handlePosition, () => {}, { enableHighAccuracy:true, maximumAge:0, timeout:8000 });
+    tickRef.current = setInterval(() => setElapsed(e => e+1), 1000);
+    lastPointRef.current = lastPointRef.current ? { ...lastPointRef.current, t: Date.now() } : null;
+    setStatus('recording');
+  };
+
+  const finish = () => {
+    if (watchIdRef.current) navigator.geolocation.clearWatch(watchIdRef.current);
+    if (tickRef.current) clearInterval(tickRef.current);
+    if (pointsRef.current.length < 2 || distance < 50){
+      onCancel();
+      return;
+    }
+    const ride = {
+      startTime: startWallRef.current,
+      endTime: Date.now(),
+      elapsed,
+      movingTime,
+      distance,
+      avgSpeedKmh: movingTime > 0 ? (distance/movingTime)*3.6 : 0,
+      maxSpeedKmh: maxSpeed,
+      elevGain,
+      maxAlt,
+      points: pointsRef.current
+    };
+    onFinish(ride);
+  };
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      <div ref={mapRef} id="map" style={{height:'42vh', width:'100%'}}></div>
+
+      <div className="flex-1 px-5 pt-5 pb-8 flex flex-col">
+        <div className="flex items-center gap-2 mb-4">
+          <div className={`pulse-dot ${status!=='recording' ? 'opacity-30' : ''}`}></div>
+          <span className="font-mono text-xs text-[var(--text-dim)] uppercase tracking-wider">
+            {status === 'recording' ? 'Gravando' : status === 'paused' ? 'Pausado' : 'Pronto'}
+          </span>
+          {!gpsOk && <span className="font-mono text-xs text-[var(--yellow)] ml-2">buscando GPS…</span>}
+        </div>
+
+        {error && <div className="text-sm text-[var(--orange)] mb-3">{error}</div>}
+
+        <div className="text-center mb-6">
+          <div className="stat-num text-6xl">{fmtTime(elapsed)}</div>
+          <div className="text-xs text-[var(--text-dim)] mt-1 uppercase tracking-wide">tempo total</div>
+        </div>
+
+        <div className="road-divider mb-6"></div>
+
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <div className="stat-num text-3xl">{(distance/1000).toFixed(2)}</div>
+            <div className="text-xs text-[var(--text-dim)] uppercase">km</div>
+          </div>
+          <div>
+            <div className="stat-num text-3xl">{curSpeed.toFixed(1)}</div>
+            <div className="text-xs text-[var(--text-dim)] uppercase">km/h agora</div>
+          </div>
+          <div>
+            <div className="stat-num text-3xl">{maxSpeed.toFixed(1)}</div>
+            <div className="text-xs text-[var(--text-dim)] uppercase">km/h máx.</div>
+          </div>
+          <div>
+            <div className="stat-num text-3xl">{Math.round(elevGain)}</div>
+            <div className="text-xs text-[var(--text-dim)] uppercase">m de subida</div>
+          </div>
+        </div>
+
+        <div className="flex-1"></div>
+
+        <div className="flex gap-3">
+          {status === 'ready' && (
+            <button onClick={start} className="btn-primary flex-1 rounded-2xl py-4 text-lg font-display">Iniciar pedalada</button>
+          )}
+          {status === 'recording' && (
+            <>
+              <button onClick={pause} className="btn-ghost flex-1 rounded-2xl py-4 text-lg font-display">Pausar</button>
+              <button onClick={finish} className="btn-primary flex-1 rounded-2xl py-4 text-lg font-display">Finalizar</button>
+            </>
+          )}
+          {status === 'paused' && (
+            <>
+              <button onClick={resume} className="btn-primary flex-1 rounded-2xl py-4 text-lg font-display">Retomar</button>
+              <button onClick={finish} className="btn-ghost flex-1 rounded-2xl py-4 text-lg font-display">Finalizar</button>
+            </>
+          )}
+        </div>
+        {status === 'ready' && (
+          <button onClick={onCancel} className="text-sm text-[var(--text-dim)] mt-4">Cancelar</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MINI MAPA (thumbnail estático da rota, usado na lista)
+// ============================================================
+function RouteThumb({ points }){
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!points || points.length < 2) return;
+    const map = L.map(ref.current, { zoomControl:false, attributionControl:false, dragging:false, scrollWheelZoom:false, touchZoom:false, doubleClickZoom:false });
+    const latlngs = points.map(p => [p.lat, p.lng]);
+    const line = L.polyline(latlngs, { color:'#ff5a1f', weight:4 }).addTo(map);
+    map.fitBounds(line.getBounds(), { padding:[8,8] });
+    return () => map.remove();
+  }, [points]);
+  return <div ref={ref} style={{height:'100%', width:'100%', borderRadius:'12px'}}></div>;
+}
+
+// ============================================================
+// GRÁFICO DE ELEVAÇÃO (SVG simples)
+// ============================================================
+function ElevationChart({ points, highlight }){
+  if (!points || points.length < 2) return null;
+  const w = 340, h = 90;
+  const alts = points.map(p => p.alt ?? 0);
+  const dists = points.map(p => p.cumDist);
+  const minA = Math.min(...alts), maxA = Math.max(...alts);
+  const maxD = dists[dists.length-1] || 1;
+  const range = Math.max(maxA - minA, 5);
+
+  const toXY = (i) => {
+    const x = (dists[i]/maxD) * w;
+    const y = h - ((alts[i]-minA)/range) * h;
+    return [x,y];
+  };
+  const pathD = points.map((_, i) => {
+    const [x,y] = toXY(i);
+    return `${i===0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(' ');
+  const areaD = pathD + ` L ${w} ${h} L 0 ${h} Z`;
+
+  let highlightD = null;
+  if (highlight){
+    const segPts = points.slice(highlight.startIdx, highlight.endIdx+1);
+    highlightD = segPts.map((_, i) => {
+      const idx = highlight.startIdx + i;
+      const [x,y] = toXY(idx);
+      return `${i===0 ? 'M' : 'L'} ${x.toFixed(1)} ${y.toFixed(1)}`;
+    }).join(' ');
+  }
+
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-24">
+      <path d={areaD} fill="rgba(255,90,31,0.12)" />
+      <path d={pathD} fill="none" stroke="#5b6470" strokeWidth="2" />
+      {highlightD && <path d={highlightD} fill="none" stroke="#ff5a1f" strokeWidth="3.5" />}
+    </svg>
+  );
+}
+
+// ============================================================
+// TELA: DETALHE DE UMA PEDALADA
+// ============================================================
+function DetailScreen({ ride, onBack, onDelete }){
+  const mapRef = useRef(null);
+  const climb = useMemo(() => findToughestClimb(ride.points), [ride]);
+
+  useEffect(() => {
+    if (!ride.points || ride.points.length < 2) return;
+    const map = L.map(mapRef.current, { zoomControl:false, attributionControl:false });
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom:19 }).addTo(map);
+    const latlngs = ride.points.map(p => [p.lat, p.lng]);
+    const line = L.polyline(latlngs, { color:'#ff5a1f', weight:5 }).addTo(map);
+    L.circleMarker(latlngs[0], { radius:7, color:'#35d07f', fillColor:'#35d07f', fillOpacity:1 }).addTo(map);
+    L.circleMarker(latlngs[latlngs.length-1], { radius:7, color:'#eef0f2', fillColor:'#eef0f2', fillOpacity:1 }).addTo(map);
+    if (climb){
+      const segLatLngs = ride.points.slice(climb.startIdx, climb.endIdx+1).map(p => [p.lat, p.lng]);
+      L.polyline(segLatLngs, { color:'#ffd23f', weight:6, opacity:0.9 }).addTo(map);
+    }
+    map.fitBounds(line.getBounds(), { padding:[24,24] });
+    return () => map.remove();
+  }, [ride, climb]);
+
+  return (
+    <div className="min-h-screen pb-10">
+      <div className="flex items-center justify-between px-5 pt-5 pb-3">
+        <button onClick={onBack} className="text-[var(--text-dim)] text-2xl">←</button>
+        <button onClick={() => onDelete(ride)} className="text-xs text-[var(--text-dim)] underline">excluir</button>
+      </div>
+
+      <div ref={mapRef} style={{height:'34vh', width:'100%'}}></div>
+
+      <div className="px-5 pt-5">
+        <div className="text-xs text-[var(--text-dim)] font-mono uppercase mb-1">{fmtDate(ride.startTime)}</div>
+        <div className="font-display text-2xl font-semibold mb-4">Pedalada</div>
+
+        <div className="grid grid-cols-3 gap-3 mb-6">
+          <div className="card p-3">
+            <div className="stat-num text-xl">{(ride.distance/1000).toFixed(2)}</div>
+            <div className="text-[10px] text-[var(--text-dim)] uppercase">km</div>
+          </div>
+          <div className="card p-3">
+            <div className="stat-num text-xl">{fmtTime(ride.movingTime)}</div>
+            <div className="text-[10px] text-[var(--text-dim)] uppercase">em movimento</div>
+          </div>
+          <div className="card p-3">
+            <div className="stat-num text-xl">{ride.avgSpeedKmh.toFixed(1)}</div>
+            <div className="text-[10px] text-[var(--text-dim)] uppercase">km/h média</div>
+          </div>
+          <div className="card p-3">
+            <div className="stat-num text-xl">{ride.maxSpeedKmh.toFixed(1)}</div>
+            <div className="text-[10px] text-[var(--text-dim)] uppercase">km/h máx.</div>
+          </div>
+          <div className="card p-3">
+            <div className="stat-num text-xl">{Math.round(ride.elevGain||0)}</div>
+            <div className="text-[10px] text-[var(--text-dim)] uppercase">m subida</div>
+          </div>
+          <div className="card p-3">
+            <div className="stat-num text-xl">{ride.maxAlt ? Math.round(ride.maxAlt) : '—'}</div>
+            <div className="text-[10px] text-[var(--text-dim)] uppercase">altitude máx.</div>
+          </div>
+        </div>
+
+        <div className="mb-6">
+          <div className="text-xs text-[var(--text-dim)] uppercase mb-2 font-mono">Perfil de elevação</div>
+          <div className="card p-3">
+            <ElevationChart points={ride.points} highlight={climb} />
+          </div>
+        </div>
+
+        {climb && (
+          <div className="card p-4" style={{borderColor:'var(--yellow)', borderWidth:'1px'}}>
+            <div className="flex items-center gap-2 mb-2">
+              <div style={{width:10,height:10,background:'var(--yellow)',borderRadius:9999}}></div>
+              <div className="font-display font-semibold">Trecho mais pesado</div>
+            </div>
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div>
+                <div className="stat-num text-lg">{(climb.dist/1000).toFixed(2)}</div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase">km</div>
+              </div>
+              <div>
+                <div className="stat-num text-lg">{Math.round(climb.elevGain)}</div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase">m subida</div>
+              </div>
+              <div>
+                <div className="stat-num text-lg">{climb.avgGrade.toFixed(1)}%</div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase">inclinação méd.</div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// TELA: HOME (lista + estatísticas gerais)
+// ============================================================
+function HomeScreen({ rides, onOpenRide, onStartRecording, loading }){
+  const totals = useMemo(() => {
+    const now = Date.now();
+    const monthAgo = now - 30*24*3600*1000;
+    const monthRides = rides.filter(r => r.startTime >= monthAgo);
+    const totalKm = monthRides.reduce((s,r) => s + r.distance, 0)/1000;
+    const totalTime = monthRides.reduce((s,r) => s + r.movingTime, 0);
+    const totalElev = monthRides.reduce((s,r) => s + (r.elevGain||0), 0);
+    let hardest = null;
+    if (rides.length){
+      hardest = [...rides].sort((a,b) => effortScore(b) - effortScore(a))[0];
+    }
+    return { totalKm, totalTime, totalElev, hardest, count: monthRides.length };
+  }, [rides]);
+
+  return (
+    <div className="min-h-screen pb-28">
+      <div className="px-5 pt-8 pb-4">
+        <div className="font-mono text-xs text-[var(--orange)] uppercase tracking-widest mb-1">Pedal</div>
+        <div className="font-display text-3xl font-semibold">Suas pedaladas</div>
+      </div>
+
+      <div className="road-divider mx-5 mb-5"></div>
+
+      <div className="px-5 grid grid-cols-3 gap-3 mb-6">
+        <div className="card p-3 text-center">
+          <div className="stat-num text-xl">{totals.totalKm.toFixed(0)}</div>
+          <div className="text-[10px] text-[var(--text-dim)] uppercase">km (30d)</div>
+        </div>
+        <div className="card p-3 text-center">
+          <div className="stat-num text-xl">{fmtTime(totals.totalTime)}</div>
+          <div className="text-[10px] text-[var(--text-dim)] uppercase">tempo (30d)</div>
+        </div>
+        <div className="card p-3 text-center">
+          <div className="stat-num text-xl">{Math.round(totals.totalElev)}</div>
+          <div className="text-[10px] text-[var(--text-dim)] uppercase">m subida (30d)</div>
+        </div>
+      </div>
+
+      {totals.hardest && (
+        <div className="px-5 mb-6">
+          <div className="text-xs text-[var(--text-dim)] uppercase font-mono mb-2">Pedalada mais pesada de todas</div>
+          <button onClick={() => onOpenRide(totals.hardest)} className="card w-full p-4 text-left flex items-center gap-3" style={{borderColor:'var(--orange)'}}>
+            <div style={{width:44,height:44,flexShrink:0}}>
+              <RouteThumb points={totals.hardest.points} />
+            </div>
+            <div>
+              <div className="font-semibold">{(totals.hardest.distance/1000).toFixed(1)} km · {Math.round(totals.hardest.elevGain||0)} m subida</div>
+              <div className="text-xs text-[var(--text-dim)]">{fmtDate(totals.hardest.startTime)}</div>
+            </div>
+          </button>
+        </div>
+      )}
+
+      <div className="px-5">
+        <div className="text-xs text-[var(--text-dim)] uppercase font-mono mb-2">Histórico</div>
+        {loading && <div className="text-sm text-[var(--text-dim)]">Carregando…</div>}
+        {!loading && rides.length === 0 && (
+          <div className="card p-6 text-center text-[var(--text-dim)] text-sm">
+            Nenhuma pedalada registrada ainda.<br/>Toque em "Nova pedalada" para começar.
+          </div>
+        )}
+        <div className="flex flex-col gap-3">
+          {rides.map(r => (
+            <button key={r.id} onClick={() => onOpenRide(r)} className="card p-3 flex items-center gap-3 text-left">
+              <div style={{width:56,height:56,flexShrink:0}}>
+                <RouteThumb points={r.points} />
+              </div>
+              <div className="flex-1">
+                <div className="font-semibold">{(r.distance/1000).toFixed(2)} km</div>
+                <div className="text-xs text-[var(--text-dim)] font-mono">
+                  {fmtTime(r.movingTime)} · {r.avgSpeedKmh.toFixed(1)} km/h · {Math.round(r.elevGain||0)} m
+                </div>
+                <div className="text-[10px] text-[var(--text-dim)] mt-0.5">{fmtDate(r.startTime)}</div>
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 p-5" style={{background:'linear-gradient(to top, var(--asphalt) 60%, transparent)'}}>
+        <button onClick={onStartRecording} className="btn-primary w-full rounded-2xl py-4 text-lg font-display">
+          + Nova pedalada
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// APP RAIZ
+// ============================================================
+function App(){
+  const [uid, setUid] = useState(null);
+  const [screen, setScreen] = useState('home'); // home | recording | detail
+  const [rides, setRides] = useState([]);
+  const [activeRide, setActiveRide] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    auth.onAuthStateChanged(user => {
+      if (user){ setUid(user.uid); }
+      else { auth.signInAnonymously().catch(e => console.error(e)); }
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!uid) return;
+    setLoading(true);
+    const unsub = db.collection('rides').where('uid','==',uid).orderBy('startTime','desc')
+      .onSnapshot(snap => {
+        const list = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        setRides(list);
+        setLoading(false);
+      }, err => { console.error(err); setLoading(false); });
+    return unsub;
+  }, [uid]);
+
+  const saveRide = async (ride) => {
+    setScreen('home');
+    try {
+      await db.collection('rides').add({ ...ride, uid });
+    } catch(e){ console.error(e); alert('Não foi possível salvar a pedalada. Verifique sua conexão.'); }
+  };
+
+  const deleteRide = async (ride) => {
+    if (!confirm('Excluir esta pedalada?')) return;
+    await db.collection('rides').doc(ride.id).delete();
+    setScreen('home');
+  };
+
+  if (screen === 'recording'){
+    return <RecordScreen onFinish={saveRide} onCancel={() => setScreen('home')} />;
+  }
+  if (screen === 'detail' && activeRide){
+    return <DetailScreen ride={activeRide} onBack={() => setScreen('home')} onDelete={deleteRide} />;
+  }
+  return (
+    <HomeScreen
+      rides={rides}
+      loading={loading}
+      onStartRecording={() => setScreen('recording')}
+      onOpenRide={(r) => { setActiveRide(r); setScreen('detail'); }}
+    />
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
 </body>
 </html>

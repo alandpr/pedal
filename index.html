@@ -76,7 +76,7 @@
 <body>
 <div id="root"></div>
 
-<script type="text/plain" id="app-source" data-presets="react">
+<script type="text/plain" id="app-source">
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
 // ============================================================
@@ -689,7 +689,7 @@ window.addEventListener('unhandledrejection', function(e) {
 });
 try {
   var src = document.getElementById('app-source').textContent;
-  var output = Babel.transform(src, { presets: ['react'] }).code;
+  var output = Babel.transform(src, { presets: [['react', { runtime: 'classic' }]] }).code;
   (0, eval)(output);
 } catch (err) {
   showError('ERRO DE COMPILACAO (BABEL)', err);
